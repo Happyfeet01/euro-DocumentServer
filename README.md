@@ -1,26 +1,58 @@
 <!--
 SPDX-FileCopyrightText: 2026 Euro-Office contributors
-SPDX-License-Identifier: AGPL
+SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 
-[![License](https://img.shields.io/badge/License-GNU%20AGPL%20V3-green.svg?style=flat)](https://www.gnu.org/licenses/agpl-3.0.en.html)
+# euro-DocumentServer
 
-# Euro-Office
-**Your sovereign office**
+Community build of [Euro-Office DocumentServer](https://github.com/Euro-Office/DocumentServer), maintained as a small downstream fork for self-hosted deployments such as Nextcloud.
 
-[Learn more.](https://github.com/Euro-Office/)
+The main reason for this fork is to provide an easy-to-consume Docker image based on Euro-Office, including the mobile web editor work maintained by the Euro-Office project, without relying on the commercial ONLYOFFICE mobile-editing edition.
 
-## Get involved
-Get involved! You can file issues, propose pull requests and more. We are looking forward to make the digital sovereign office space better than ever before!
+> This project is not affiliated with or endorsed by ONLYOFFICE or Euro-Office. It is a downstream AGPL-licensed fork of Euro-Office DocumentServer.
 
-### Try out
-We currently provide a docker image for testing and integration purposes. We are going to publish deb/rpm packages shortly.
+## Docker image
 
-```
-docker pull ghcr.io/euro-office/documentserver:latest
-docker run -i -t -d -p 8080:80 --restart=always -e EXAMPLE_ENABLED=true -e JWT_SECRET=my_long_jwt_secret_at_least_32_chars ghcr.io/euro-office/documentserver:latest
+Images are built from this repository with GitHub Actions and published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/happyfeet01/euro-documentserver:latest
 ```
 
-### Building
+Example:
 
-Our build steps and processes are documented in https://github.com/Euro-Office/DocumentServer/tree/main/build. For development there are more detailed steps to build and run individual components in https://github.com/Euro-Office/DocumentServer/tree/main/develop 
+```bash
+docker run -d \
+  --name euro-documentserver \
+  --restart unless-stopped \
+  -p 8080:80 \
+  -e JWT_ENABLED=true \
+  -e JWT_SECRET='replace-with-a-long-random-secret' \
+  ghcr.io/happyfeet01/euro-documentserver:latest
+```
+
+For a Nextcloud deployment, put the DocumentServer behind HTTPS/reverse proxy as usual and configure the same JWT secret in the Nextcloud Office/ONLYOFFICE connector.
+
+## Builds
+
+The fork intentionally keeps changes small so that updates from Euro-Office can be merged with as little friction as possible.
+
+The GitHub workflow builds the standalone DocumentServer for:
+
+- amd64
+- arm64
+
+A push to `main` publishes `:latest`. Git tags beginning with `v` publish a matching version tag and also update `:latest`.
+
+## Upstream
+
+Upstream project:
+
+- https://github.com/Euro-Office/DocumentServer
+- https://github.com/Euro-Office/
+
+Euro-Office itself is based on the open-source ONLYOFFICE DocumentServer codebase.
+
+## License
+
+GNU Affero General Public License v3.0 or later. Existing copyright, attribution and license notices from upstream are retained.

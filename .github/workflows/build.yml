@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,6 +23,9 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.arch }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -54,12 +56,15 @@ jobs:
       - name: Compute image metadata
         id: meta
         shell: bash
+        env:
+          REF_NAME_RAW: ${{ github.ref_name }}
+          REF_FULL: ${{ github.ref }}
         run: |
           set -euo pipefail
           VERSION=$(tr -d '[:space:]' < VERSION)
-          REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+          REF_NAME=$(printf '%s' "$REF_NAME_RAW" | tr '/' '-')
 
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$REF_FULL" == refs/tags/* ]]; then
             IMAGE_TAG="$REF_NAME"
           else
             IMAGE_TAG="latest"
@@ -109,12 +114,17 @@ jobs:
 
       - name: Publish manifest
         shell: bash
+        env:
+          REF_NAME_RAW: ${{ github.ref_name }}
+          REF_FULL: ${{ github.ref }}
+          IMAGE_REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_REPOSITORY: ${{ env.IMAGE_NAME }}
         run: |
           set -euo pipefail
-          REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          REF_NAME=$(printf '%s' "$REF_NAME_RAW" | tr '/' '-')
+          IMAGE="${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}"
 
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$REF_FULL" == refs/tags/* ]]; then
             SOURCE_TAG="$REF_NAME"
             TARGET_TAG="$REF_NAME"
           else
@@ -128,7 +138,7 @@ jobs:
             "${IMAGE}:${SOURCE_TAG}-arm64"
 
           # A tagged release also becomes the current :latest image.
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$REF_FULL" == refs/tags/* ]]; then
             docker buildx imagetools create \
               -t "${IMAGE}:latest" \
               "${IMAGE}:${SOURCE_TAG}-amd64" \

@@ -1,6 +1,6 @@
 <!--
 SPDX-FileCopyrightText: 2026 Euro-Office contributors
-SPDX-License-Identifier: AGPL-3.0-or-later
+SPDX-License-Identifier: AGPL
 -->
 
 # euro-DocumentServer
@@ -55,4 +55,4 @@ Euro-Office itself is based on the open-source ONLYOFFICE DocumentServer codebas
 
 ## License
 
-GNU Affero General Public License v3.0 or later. Existing copyright, attribution and license notices from upstream are retained.
+GNU Affero General Public License v3.0. Existing copyright, attribution and license notices from upstream are retained.

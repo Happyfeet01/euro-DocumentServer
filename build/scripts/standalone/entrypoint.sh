@@ -7,7 +7,11 @@ set -e
 EO_ROOT="${EO_ROOT:-/var/www/euro-office/documentserver}"
 EO_LOG="${EO_LOG:-/var/log/euro-office/documentserver}"
 EO_CONF="${EO_CONF:-/etc/euro-office/documentserver}"
-DATA_DIR="/var/www/euro-office/Data"
+# A branded image (e.g. nextcloud-office) installs under its own name and
+# sets COMPANY_NAME_LOW, so derive the paths it does not set itself.
+EO_LIB="${EO_LIB:-/var/lib/${COMPANY_NAME_LOW:-euro-office}/documentserver}"
+DATA_DIR="/var/www/${COMPANY_NAME_LOW:-euro-office}/Data"
+LEGACY_DATA_DIR="/var/www/euro-office/Data"
 PRIVATE_DIR="${DATA_DIR}/.private"
 CONFIG_FILE="${EO_CONF}/local.json"
 LOG4JS_CONFIG="${EO_CONF}/log4js/production.json"
@@ -19,6 +23,19 @@ NGINX_DS_CONF="${NGINX_DS_DIR}/ds.conf"
 NGINX_DS_COMMON_CONF="${NGINX_DS_DIR}/includes/ds-common.conf"
 NGINX_DS_SSL_TMPL="${NGINX_DS_DIR}/ds-ssl.conf.tmpl"
 SUPERVISOR_CONF_DIR="/etc/supervisor/conf.d"
+
+# --------------------------------------------------------------------
+# Normalize boolean env vars before the defaults below, so a value that is
+# not recognized falls back to the variable's own default.
+# --------------------------------------------------------------------
+. /usr/local/lib/euro-office/bool.sh
+. /usr/local/lib/euro-office/log-dirs.sh
+require_bool JWT_ENABLED JWT_ENABLED_INBOX JWT_ENABLED_OUTBOX
+normalize_bool JWT_IN_BODY \
+  WOPI_ENABLED PLUGINS_ENABLED METRICS_ENABLED GENERATE_FONTS \
+  NGINX_ACCESS_LOG ONLYOFFICE_HTTPS_HSTS_ENABLED \
+  USE_UNAUTHORIZED_STORAGE ALLOW_PRIVATE_IP_ADDRESS ALLOW_META_IP_ADDRESS \
+  ADMINPANEL_ENABLED EXAMPLE_ENABLED
 
 # --------------------------------------------------------------------
 # Defaults (aligned with upstream run-document-server.sh)
@@ -61,6 +78,8 @@ ONLYOFFICE_HTTPS_HSTS_MAXAGE="${ONLYOFFICE_HTTPS_HSTS_MAXAGE:-31536000}"
 USE_UNAUTHORIZED_STORAGE="${USE_UNAUTHORIZED_STORAGE:-false}"
 ALLOW_PRIVATE_IP_ADDRESS="${ALLOW_PRIVATE_IP_ADDRESS:-false}"
 ALLOW_META_IP_ADDRESS="${ALLOW_META_IP_ADDRESS:-false}"
+ADMINPANEL_ENABLED="${ADMINPANEL_ENABLED:-false}"
+EXAMPLE_ENABLED="${EXAMPLE_ENABLED:-false}"
 
 # --------------------------------------------------------------------
 # Validate DB type (standalone image only supports postgres)
@@ -91,6 +110,9 @@ deprecated_var DB_PASSWORD DB_PWD
 # --------------------------------------------------------------------
 # Persisted secrets under $DATA_DIR/.private (volume-mountable).
 # --------------------------------------------------------------------
+if [ "$DATA_DIR" != "$LEGACY_DATA_DIR" ] && [ -d "${LEGACY_DATA_DIR}/.private" ]; then
+  echo "WARNING: ${LEGACY_DATA_DIR} is no longer read by this image. Mount that volume at ${DATA_DIR} instead, or generated secrets are regenerated." >&2
+fi
 mkdir -p "$PRIVATE_DIR"
 chmod 700 "$PRIVATE_DIR" 2>/dev/null || true
 
@@ -386,17 +408,26 @@ enable_supervisor_program() {
   [ -f "$conf" ] && sed -i 's/^autostart=false$/autostart=true/' "$conf"
 }
 
-[ "${ADMINPANEL_ENABLED:-false}" = "true" ] && enable_supervisor_program ds-adminpanel
-[ "${EXAMPLE_ENABLED:-false}"    = "true" ] && enable_supervisor_program ds-example
+[ "$ADMINPANEL_ENABLED" = "true" ] && enable_supervisor_program ds-adminpanel
+[ "$EXAMPLE_ENABLED"    = "true" ] && enable_supervisor_program ds-example
 [ "$METRICS_ENABLED" = "true" ]              && enable_supervisor_program ds-metrics
 
 # --------------------------------------------------------------------
-# Example app local.json (kept from previous entrypoint).
+# Example app local.json.
+#
+# Written whenever the example is installed, NOT only when EXAMPLE_ENABLED
+# is true: the example can also be started later via
+# `supervisorctl start example`, and it must then share the document
+# server's JWT settings. Otherwise it keeps the independently generated
+# secret from package install and every token fails with "invalid
+# signature" (#395). token.enable follows JWT_ENABLED so that
+# JWT_ENABLED=false also disables signing in the example.
 # --------------------------------------------------------------------
-if [ "${EXAMPLE_ENABLED:-false}" = "true" ] && [ -d "$EXAMPLE_CONF_DIR" ]; then
+if [ -d "$EXAMPLE_CONF_DIR" ]; then
   jq -n \
     --arg secret      "$JWT_SECRET" \
     --arg header      "$JWT_HEADER" \
+    --arg jwtEnabled  "$JWT_ENABLED" \
     --arg maxFileSize "$MAX_FILE_SIZE" \
     '{
       "server": {
@@ -404,12 +435,13 @@ if [ "${EXAMPLE_ENABLED:-false}" = "true" ] && [ -d "$EXAMPLE_CONF_DIR" ]; then
         "exampleUrl": "http://localhost/example/",
         "maxFileSize": ($maxFileSize | tonumber? // $maxFileSize),
         "token": {
-          "enable": true,
+          "enable": ($jwtEnabled == "true"),
           "secret": $secret,
           "authorizationHeader": $header
         }
       }
-    }' > "$EXAMPLE_LOCAL"
+    }' > "${EXAMPLE_LOCAL}.tmp"
+  mv "${EXAMPLE_LOCAL}.tmp" "$EXAMPLE_LOCAL"
 fi
 
 # --------------------------------------------------------------------
@@ -418,12 +450,17 @@ fi
 update_welcome_page() {
   WELCOME_PAGE="${EO_ROOT}-example/welcome/docker.html"
   EXAMPLE_DISABLED_PAGE="${EO_ROOT}-example/welcome/example-disabled.html"
+  ADMIN_DISABLED_PAGE="${EO_ROOT}-example/welcome/admin-disabled.html"
 
   sed 's/linux/docker/' -i /etc/nginx/includes/ds-example.conf
 
   [ -f "$EXAMPLE_DISABLED_PAGE" ] && \
-    sed -i 's|sudo systemctl start ds-example|sudo docker exec $(sudo docker ps -q) supervisorctl start ds:example|g' \
+    sed -i 's|sudo systemctl start ds-example|sudo docker exec $(sudo docker ps -q) supervisorctl start example|g' \
         "$EXAMPLE_DISABLED_PAGE"
+
+  [ -f "$ADMIN_DISABLED_PAGE" ] && \
+    sed -i 's|sudo systemctl start ds-adminpanel|sudo docker exec $(sudo docker ps -q) supervisorctl start adminpanel|g' \
+        "$ADMIN_DISABLED_PAGE"
 
   if [ -e "$WELCOME_PAGE" ]; then
     DOCKER_CONTAINER_ID=$(basename "$(cat /proc/1/cpuset 2>/dev/null)")
@@ -453,6 +490,54 @@ API_TPL="${EO_ROOT}/web-apps/apps/api/documents/api.js.tpl"
 if [ ! -f "$API_TPL" ] && [ -f "${EO_ROOT}/web-apps/apps/api/documents/api.js" ]; then
   cp "${EO_ROOT}/web-apps/apps/api/documents/api.js" "$API_TPL"
 fi
+
+# --------------------------------------------------------------------
+# Repair ownership of persisted state before the services touch it.
+#
+# The service accounts used to get their UIDs allocated dynamically by the
+# package installs, which made them a function of package order: dropping
+# Recommends in v9.3.3 removed dbus's `messagebus` account from that layer
+# and slid postgres from 103 to 102. A Postgres volume written by v9.3.2
+# then had its datadir owned by a UID that resolves to `rabbitmq` in the
+# new image, postgresql-common refused to start on the mismatch, the
+# entrypoint died under `set -e` before nginx, and a restart policy turned
+# that into a loop reporting nothing but the ownership line (#314).
+#
+# The UIDs are pinned in the Dockerfile now, so this cannot recur, but
+# volumes written before that still carry the old ones and a bind mount can
+# arrive owned by anything. That includes $EO_LIB, where the converter
+# creates App_Data, which is commonly mounted alongside $DATA_DIR (#335).
+# Chown only what is actually mismatched, since the data directories can be
+# large.
+# --------------------------------------------------------------------
+ensure_owner() {
+  owner="$1"
+  shift
+  uid="$(id -u "$owner" 2>/dev/null)" || return 0
+  gid="$(id -g "$owner" 2>/dev/null)" || return 0
+
+  for dir in "$@"; do
+    [ -d "$dir" ] || continue
+    current="$(stat -c '%u:%g' "$dir" 2>/dev/null)" || continue
+    [ "$current" = "${uid}:${gid}" ] && continue
+
+    echo "Repairing ownership of ${dir}: ${current} -> ${uid}:${gid} (${owner})"
+    chown -R "${uid}:${gid}" "$dir" \
+      || echo "WARNING: could not chown ${dir}; ${owner} may fail to start." >&2
+  done
+}
+
+[ "$DB_HOST"   = "localhost" ] && ensure_owner postgres /var/lib/postgresql
+[ "$AMQP_HOST" = "localhost" ] && [ -z "${AMQP_URI:-}" ] && ensure_owner rabbitmq /var/lib/rabbitmq
+ensure_log_dirs "$SUPERVISOR_CONF_DIR"
+ensure_owner ds "$DATA_DIR" "$EO_LOG" "$EO_LIB"
+
+# $DATA_DIR holds the persisted secrets and the repair above is recursive, so
+# put the owner back: on a fresh install $PRIVATE_DIR and the WOPI keypair are
+# root-owned and only this script reads them. The services never open these
+# files; they get the values from $CONFIG_FILE, which this script fills.
+[ -d "$PRIVATE_DIR" ] && chown -R root "$PRIVATE_DIR"
+chown root "$WOPI_PRIVATE_KEY" "$WOPI_PUBLIC_KEY" 2>/dev/null || true
 
 # --------------------------------------------------------------------
 # Start bundled services only when the corresponding host points at
@@ -585,4 +670,9 @@ fi
 # --------------------------------------------------------------------
 [ -n "$JWT_MESSAGE" ] && echo "$JWT_MESSAGE"
 
-exec /usr/bin/supervisord
+# Hand off to supervisord under tini. tini becomes PID 1 and acts as the init
+# zombie-reaper: it silently reaps orphaned children of the bundled daemons
+# (postgres, redis, nginx, rabbitmq) and of the node services. Without it,
+# supervisord would run as PID 1 and log every reaped orphan as a noisy
+# "reaped unknown pid" INFO message.
+exec /usr/bin/tini -- /usr/bin/supervisord

@@ -1,0 +1,58 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Euro-Office/DocumentServer.git
+          git fetch upstream main
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge --no-edit upstream/main; then
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      - name: Push merged main
+        if: steps.merge.outputs.result == 'merged'
+        run: git push origin main
+
+      - name: Open PR when the merge conflicts
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          BRANCH="upstream-sync/$(date +%Y-%m-%d)"
+          git checkout -b "$BRANCH"
+          git merge upstream/main || true
+          git add -A
+          git commit -m "chore: merge upstream/main (conflicted, needs manual resolution)"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Sync upstream Euro-Office/DocumentServer ($(date +%Y-%m-%d))" \
+            --body "Automated weekly merge of \`upstream/main\` into \`main\`. Conflicts need manual resolution. Fork-specific files (\`build.yml\`, \`README.md\`, deleted mirror workflows) intentionally keep the fork version." \
+            --base main --head "$BRANCH" || true
